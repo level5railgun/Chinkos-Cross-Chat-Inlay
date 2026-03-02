@@ -1,0 +1,76 @@
+/* Cross-Platform Chat Overlay — injected styles */
+
+/* Injected chat row */
+.ext-chat-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+  gap: 2px;
+  font-size: 1.3rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* Platform source badge (YouTube icon, etc.) */
+.ext-platform-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+
+.ext-platform-badge img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 2px;
+}
+
+/* Member/subscriber badge from source platform */
+.ext-chat-line .chat-badge img {
+  height: 18px;
+  width: auto;
+  vertical-align: middle;
+}
+
+/* Emoji images inside message body */
+.ext-chat-line .chat-image {
+  height: 1.8rem;
+  width: auto;
+  vertical-align: middle;
+}
+
+/* "Also live on YouTube" pinned banner */
+.ext-live-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(255, 0, 0, 0.1);
+  border-left: 3px solid #FF0000;
+  font-size: 1.2rem;
+  color: inherit;
+  /* Sit above Twitch's pinned messages / announcements which are absolutely
+     positioned within the chat container and would otherwise cover the banner. */
+  position: relative;
+  z-index: 3;
+}
+
+.ext-live-banner img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.ext-live-banner a {
+  color: #FF0000;
+  text-decoration: none;
+  font-weight: bold;
+  margin-left: auto;
+}
+
+.ext-live-banner a:hover {
+  text-decoration: underline;
+}

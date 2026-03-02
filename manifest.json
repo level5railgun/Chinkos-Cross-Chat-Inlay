@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Chinko's Cross Chat Inlay",
+  "version": "0.1.0",
+  "permissions": ["storage", "activeTab", "cookies"],
+  "host_permissions": [
+    "https://www.twitch.tv/*",
+    "https://www.youtube.com/*"
+  ],
+  "content_scripts": [{
+    "matches": ["https://www.twitch.tv/*"],
+    "js": ["src/config/streamers.js", "src/injector.js", "src/content.js"],
+    "css": ["src/styles.css"],
+    "run_at": "document_idle"
+  }],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16":  "assets/icons/chinko_icon.png",
+    "32":  "assets/icons/chinko_icon.png",
+    "48":  "assets/icons/chinko_icon.png",
+    "128": "assets/icons/chinko_icon.png"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_icon": {
+      "16":  "assets/icons/chinko_icon.png",
+      "32":  "assets/icons/chinko_icon.png",
+      "48":  "assets/icons/chinko_icon.png",
+      "128": "assets/icons/chinko_icon.png"
+    }
+  },
+  "web_accessible_resources": [{
+    "resources": ["assets/icons/youtube.png"],
+    "matches": ["https://www.twitch.tv/*"]
+  }]
+}

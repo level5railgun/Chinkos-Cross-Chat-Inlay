@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chat Overlay</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 280px;
+      font-family: Inter, system-ui, sans-serif;
+      font-size: 13px;
+      background: #18181b;
+      color: #efeff1;
+      padding: 14px;
+    }
+
+    h1 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+      color: #bf94ff;
+    }
+
+    .channel-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: #adadb8;
+    }
+
+    .channel-row .channel-name {
+      color: #efeff1;
+      font-weight: 600;
+    }
+
+    .not-enrolled {
+      color: #adadb8;
+      font-style: italic;
+      padding: 8px 0;
+    }
+
+    .platform-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+      border-top: 1px solid #2d2d31;
+    }
+
+    .platform-status img {
+      width: 16px;
+      height: 16px;
+      object-fit: contain;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .status-dot.live    { background: #00b300; }
+    .status-dot.offline { background: #888; }
+    .status-dot.error   { background: #e44; }
+    .status-dot.unknown { background: #888; }
+
+    .status-label { flex: 1; }
+
+    .status-link {
+      color: #bf94ff;
+      text-decoration: none;
+      font-size: 11px;
+    }
+
+    .status-link:hover { text-decoration: underline; }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #2d2d31;
+    }
+
+    .toggle-label {
+      font-size: 12px;
+      color: #adadb8;
+    }
+
+    /* Toggle switch */
+    .switch { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #444; border-radius: 20px;
+      transition: background 0.2s;
+    }
+    .slider::before {
+      position: absolute; content: '';
+      height: 14px; width: 14px;
+      left: 3px; bottom: 3px;
+      background: #fff; border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    input:checked + .slider { background: #9147ff; }
+    input:checked + .slider::before { transform: translateX(16px); }
+
+    /* Developer override section */
+    .dev-section {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed #3d3d41;
+    }
+    .dev-heading {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #f0a500;
+      margin-bottom: 7px;
+    }
+    .dev-platform-label {
+      font-size: 11px;
+      color: #adadb8;
+      margin-bottom: 4px;
+    }
+    .dev-input-row {
+      display: flex;
+      gap: 5px;
+    }
+    .dev-input {
+      flex: 1;
+      background: #2d2d31;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #efeff1;
+      font-size: 11px;
+      padding: 4px 7px;
+      min-width: 0;
+    }
+    .dev-input:focus { outline: none; border-color: #f0a500; }
+    .dev-input::placeholder { color: #666; }
+    .dev-btn {
+      background: #2d2d31;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #efeff1;
+      font-size: 11px;
+      padding: 4px 9px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .dev-btn:hover { background: #3d3d41; }
+    .dev-active {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 6px;
+      font-size: 11px;
+      color: #f0a500;
+    }
+    .dev-active-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dev-clear {
+      background: none;
+      border: none;
+      color: #888;
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0 0 0 8px;
+      flex-shrink: 0;
+    }
+    .dev-clear:hover { color: #efeff1; }
+    .dev-error { margin-top: 5px; font-size: 11px; color: #e44; }
+  </style>
+</head>
+<body>
+  <h1>Chat Overlay</h1>
+  <div id="root"></div>
+  <!-- Load shared streamer config before popup.js so STREAMERS is available as a global,
+       matching the same pattern used by the content scripts. Single source of truth. -->
+  <script src="config/streamers.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
