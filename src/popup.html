@@ -37,7 +37,8 @@
       font-weight: 600;
     }
 
-    .not-enrolled {
+    .not-enrolled,
+    .discovery-msg {
       color: #adadb8;
       font-style: italic;
       padding: 8px 0;
@@ -112,7 +113,7 @@
     input:checked + .slider { background: #9147ff; }
     input:checked + .slider::before { transform: translateX(16px); }
 
-    /* Developer override section */
+    /* Manual override section */
     .dev-section {
       margin-top: 12px;
       padding-top: 12px;
@@ -183,9 +184,6 @@
 <body>
   <h1>Chat Overlay</h1>
   <div id="root"></div>
-  <!-- Load shared streamer config before popup.js so STREAMERS is available as a global,
-       matching the same pattern used by the content scripts. Single source of truth. -->
-  <script src="config/streamers.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

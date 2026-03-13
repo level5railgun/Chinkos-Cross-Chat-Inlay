@@ -1,10 +1,10 @@
 // Content script — injected into twitch.tv/*.
-// Depends on (loaded before this file via manifest): streamers.js, injector.js
+// Depends on (loaded before this file via manifest): injector.js
 
 (function () {
   'use strict';
 
-  // --- Allowlist check ---
+  // --- Channel detection ---
 
   function getChannelFromPath() {
     // Twitch URLs: /channelname or /channelname/...
@@ -13,9 +13,7 @@
   }
 
   const channel = getChannelFromPath();
-  const streamerConfig = channel ? STREAMERS[channel] : null;
-
-  if (!streamerConfig) return; // Not an opted-in channel — exit immediately.
+  if (!channel) return; // Not a channel page — exit.
 
   // --- State ---
 
@@ -32,6 +30,114 @@
   // Cache for popup status queries — updated whenever the background pushes
   // a PLATFORM_STATUS message. Avoids an async round-trip through the background.
   const platformStatuses = {};
+
+  // Auto-detection state
+  let autoDetectedPlatforms = null; // set when YouTube link found via page scan
+  let discoveryState = 'scanning';
+  //   'scanning'  — looking for YouTube link on page
+  //   'found'     — YouTube link found, polling started
+  //   'not_found' — scan timed out with no link
+  let scanObserver = null;
+  let scanTimeout = null;
+
+  // --- YouTube link scanner ---
+
+  function parseYouTubeLinkFromHref(href) {
+    if (!href) return null;
+    let url;
+    try { url = new URL(href); } catch { return null; }
+
+    const host = url.hostname.replace(/^www\./, '');
+
+    if (host === 'youtu.be') {
+      const videoId = url.pathname.slice(1).split('/')[0];
+      if (videoId && /^[\w-]{11}$/.test(videoId)) return { videoId };
+      return null;
+    }
+
+    if (host !== 'youtube.com') return null;
+
+    // Watch URL → extract video ID
+    const v = url.searchParams.get('v');
+    if (v && /^[\w-]{11}$/.test(v)) return { videoId: v };
+
+    const path = url.pathname;
+
+    // /@Handle or /@Handle/...
+    const atMatch = path.match(/^\/@([^/]+)/);
+    if (atMatch) return { channelHandle: atMatch[1] };
+
+    // /channel/UCxxxx
+    const channelMatch = path.match(/^\/channel\/(UC[\w-]+)/);
+    if (channelMatch) return { channelId: channelMatch[1] };
+
+    // /c/Name (legacy)
+    const legacyMatch = path.match(/^\/c\/([^/]+)/);
+    if (legacyMatch) return { channelHandle: legacyMatch[1] };
+
+    return null;
+  }
+
+  function findYouTubeChannelLink() {
+    const links = document.querySelectorAll('a[href*="youtube"]');
+    // Prefer channel links (handle/channelId) over video links
+    for (const link of links) {
+      if (link.closest('[data-a-target="chat-scroller"]')) continue;
+      const parsed = parseYouTubeLinkFromHref(link.href);
+      if (parsed && !parsed.videoId) return parsed;
+    }
+    // Fallback: accept video links too
+    for (const link of links) {
+      if (link.closest('[data-a-target="chat-scroller"]')) continue;
+      const parsed = parseYouTubeLinkFromHref(link.href);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+
+  function onYouTubeLinkFound(config) {
+    autoDetectedPlatforms = { youtube: config };
+    discoveryState = 'found';
+    if (!port) {
+      connect();
+    } else {
+      sendStartPolling();
+    }
+  }
+
+  function startYouTubeLinkScan() {
+    // Immediate check
+    const found = findYouTubeChannelLink();
+    if (found) {
+      onYouTubeLinkFound(found);
+      return;
+    }
+
+    // MutationObserver scan — waits for panels to render
+    scanObserver = new MutationObserver(() => {
+      const result = findYouTubeChannelLink();
+      if (result) {
+        scanObserver.disconnect();
+        scanObserver = null;
+        clearTimeout(scanTimeout);
+        scanTimeout = null;
+        onYouTubeLinkFound(result);
+      }
+    });
+    scanObserver.observe(document.body, { childList: true, subtree: true });
+
+    // 15-second timeout: if panels never render a YouTube link, mark not_found
+    scanTimeout = setTimeout(() => {
+      if (scanObserver) {
+        scanObserver.disconnect();
+        scanObserver = null;
+      }
+      scanTimeout = null;
+      if (discoveryState === 'scanning') {
+        discoveryState = 'not_found';
+      }
+    }, 15000);
+  }
 
   // --- Port connection ---
 
@@ -64,14 +170,15 @@
 
   function sendStartPolling() {
     if (!port) return;
-    // Apply dev override if one is stored, otherwise use the hardcoded config.
-    chrome.storage.session.get(['devOverride'], (result) => {
+    // Manual override takes highest priority; fall back to auto-detected platforms.
+    chrome.storage.session.get(['manualOverride'], (result) => {
       if (chrome.runtime.lastError || !result) result = {};
       if (!port) return; // port may have died while waiting for storage
-      const platforms = result.devOverride?.platforms ?? streamerConfig.platforms;
+      const platforms = result.manualOverride?.platforms ?? autoDetectedPlatforms;
+      if (!platforms) return; // Still scanning or nothing found — wait
       port.postMessage({
         type: 'START_POLLING',
-        twitchChannel: streamerConfig.twitch,
+        twitchChannel: channel,
         platforms
       });
     });
@@ -106,7 +213,7 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return false;
     if (msg.type === 'GET_STATUS') {
-      sendResponse({ statuses: platformStatuses });
+      sendResponse({ statuses: platformStatuses, discoveryState });
     }
     return false; // synchronous response — no need to keep channel open
   });
@@ -117,7 +224,7 @@
     if (!port) return;
     port.postMessage({
       type: document.hidden ? 'PAUSE_POLLING' : 'RESUME_POLLING',
-      twitchChannel: streamerConfig.twitch
+      twitchChannel: channel
     });
   });
 
@@ -125,7 +232,7 @@
 
   window.addEventListener('pagehide', () => {
     if (port) {
-      port.postMessage({ type: 'STOP_POLLING', twitchChannel: streamerConfig.twitch });
+      port.postMessage({ type: 'STOP_POLLING', twitchChannel: channel });
       port.disconnect();
       port = null;
     }
@@ -139,8 +246,8 @@
 
   let lastPathname = window.location.pathname;
 
-  // Set when SPA navigation leaves the enrolled channel (e.g. raid). Prevents
-  // the secondary MutationObserver from reconnecting with stale config after
+  // Set when SPA navigation leaves this channel (e.g. raid). Prevents
+  // the secondary MutationObserver from reconnecting with stale state after
   // Twitch remounts the chat container for the new channel.
   let navigatedAway = false;
 
@@ -150,20 +257,22 @@
 
     navigatedAway = true;
 
-    // Stop polling for the old channel and disconnect.
+    // Stop polling and disconnect.
     if (port) {
-      port.postMessage({ type: 'STOP_POLLING', twitchChannel: streamerConfig.twitch });
+      port.postMessage({ type: 'STOP_POLLING', twitchChannel: channel });
       port.disconnect();
       port = null;
     }
 
     // Hide all banners from the previous channel.
-    for (const platform of Object.keys(streamerConfig.platforms)) {
+    const platforms = autoDetectedPlatforms ?? {};
+    for (const platform of Object.keys(platforms)) {
       hideLiveBanner(platform);
     }
 
-    // The new channel may or may not be in the allowlist — if not, we simply
-    // stop. A full page load to the new channel will re-run this script.
+    // Cancel any in-progress scan.
+    if (scanObserver) { scanObserver.disconnect(); scanObserver = null; }
+    if (scanTimeout) { clearTimeout(scanTimeout); scanTimeout = null; }
   }
 
   const titleEl = document.querySelector('head > title');
@@ -216,11 +325,11 @@
 
   const secondaryObserver = new MutationObserver(() => {
     // Re-attach primary observer when Twitch remounts the chat log.
-    if (navigatedAway) return; // Left the enrolled channel (e.g. raid) — don't reconnect.
+    if (navigatedAway) return; // Left this channel (e.g. raid) — don't reconnect.
     if (!document.querySelector('[data-a-target="chat-scroller"] [role="log"]')) return;
     if (attachPrimaryObserver()) {
-      // Chat was remounted — re-send START_POLLING in case the port dropped.
-      if (!port) connect();
+      // Chat was remounted — reconnect if port dropped and we have platforms to poll.
+      if (!port && autoDetectedPlatforms) connect();
     }
   });
 
@@ -242,17 +351,21 @@
       if (!port) return;
       port.postMessage({
         type: enabled ? 'RESUME_POLLING' : 'PAUSE_POLLING',
-        twitchChannel: streamerConfig.twitch
+        twitchChannel: channel
       });
     }
 
-    if ('devOverride' in changes) {
+    if ('manualOverride' in changes) {
       // Restart polling immediately with the new (or cleared) override.
-      if (!port) return;
-      const platforms = changes.devOverride.newValue?.platforms ?? streamerConfig.platforms;
+      const platforms = changes.manualOverride.newValue?.platforms ?? autoDetectedPlatforms;
+      if (!port) {
+        if (platforms) connect(); // Port not yet open — open it now with the override
+        return;
+      }
+      if (!platforms) return;
       port.postMessage({
         type: 'START_POLLING',
-        twitchChannel: streamerConfig.twitch,
+        twitchChannel: channel,
         platforms
       });
     }
@@ -262,5 +375,7 @@
 
   // Attempt to attach the primary observer immediately (chat may already exist).
   attachPrimaryObserver();
-  connect();
+  // Begin scanning for a YouTube link in the page panels.
+  // Port/polling is deferred until a link is found (or a manual override is set).
+  startYouTubeLinkScan();
 })();

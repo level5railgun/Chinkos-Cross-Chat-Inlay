@@ -23,14 +23,18 @@ export function createAdapter({ onMessages, onStatus }) {
   let pollTimer = null;
   let stopped = false;
   let paused = false;
+  let auth403Count = 0; // consecutive 403s; breaks infinite refresh loop
   let channelHandle = null;
-  let initVideoId = null; // set when init receives a direct videoId (dev override)
+  let channelId = null;
+  let initVideoId = null; // set when init receives a direct videoId (manual override)
 
   // --- Discovery ---
 
   async function discoverLive() {
-    if (!channelHandle) return null; // no handle available (videoId-only init)
-    const url = `https://www.youtube.com/@${channelHandle}/live`;
+    if (!channelHandle && !channelId) return null;
+    const url = channelHandle
+      ? `https://www.youtube.com/@${channelHandle}/live`
+      : `https://www.youtube.com/channel/${channelId}/live`;
     try {
       const res = await fetch(url, { redirect: 'follow' });
       console.log(`[overlay/youtube] discoverLive status=${res.status} finalUrl=${res.url}`);
@@ -273,6 +277,8 @@ export function createAdapter({ onMessages, onStatus }) {
       const { messages, nextToken, timeoutMs: t } = await fetchBatch();
       if (stopped) return;
 
+      auth403Count = 0; // successful poll — reset consecutive error counter
+
       if (!nextToken) {
         // No continuation token means the stream ended.
         videoId = null;
@@ -289,11 +295,19 @@ export function createAdapter({ onMessages, onStatus }) {
       console.warn('[overlay/youtube] poll error:', err.message);
 
       if (err.message.includes('403') && videoId) {
-        // 403 means YouTube rejected our session context — the continuation
-        // token, visitorData, or apiKey extracted at init has gone stale.
-        // Re-fetch the live_chat page to obtain a fresh set of all three,
-        // then resume polling from the new token instead of retrying blind.
-        console.log('[overlay/youtube] 403 — refreshing session via getInitialData');
+        auth403Count++;
+        if (auth403Count > 3) {
+          // Refreshing the session hasn't helped after multiple attempts —
+          // the auth issue is unresolvable here. Drop back to full discovery.
+          auth403Count = 0;
+          console.warn('[overlay/youtube] 403 persists after refresh — dropping to discovery');
+          onStatus('error');
+          if (!stopped) pollTimer = setTimeout(discover, DISCOVERY_RETRY_MS);
+          return;
+        }
+        // Re-fetch the live_chat page to obtain fresh session context
+        // (continuation token, visitorData, apiKey, datasyncId).
+        console.log(`[overlay/youtube] 403 (attempt ${auth403Count}) — refreshing session via getInitialData`);
         const freshToken = await getInitialData(videoId);
         if (stopped) return;
         if (freshToken) {
@@ -301,6 +315,7 @@ export function createAdapter({ onMessages, onStatus }) {
           timeoutMs = FALLBACK_POLL_MS; // conservative delay after re-init
         } else {
           // Page fetch itself failed — drop back to full discovery.
+          auth403Count = 0;
           onStatus('error');
           if (!stopped) pollTimer = setTimeout(discover, DISCOVERY_RETRY_MS);
           return;
@@ -320,9 +335,11 @@ export function createAdapter({ onMessages, onStatus }) {
   async function discover() {
     if (stopped) return;
 
-    // No channel handle available means we were started with a direct videoId that
-    // has since gone offline. Cannot rediscover without a handle — stop here.
-    if (!channelHandle) {
+    auth403Count = 0; // fresh discovery attempt — reset error counter
+
+    // No channel handle or ID available means we were started with a direct videoId that
+    // has since gone offline. Cannot rediscover — stop here.
+    if (!channelHandle && !channelId) {
       onStatus('offline');
       return;
     }
@@ -356,7 +373,8 @@ export function createAdapter({ onMessages, onStatus }) {
   return {
     async init(config) {
       channelHandle = config.channelHandle ?? null;
-      initVideoId   = config.videoId      ?? null;
+      channelId     = config.channelId     ?? null;
+      initVideoId   = config.videoId       ?? null;
       stopped = false;
       paused  = false;
 

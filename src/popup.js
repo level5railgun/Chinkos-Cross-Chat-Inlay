@@ -1,5 +1,4 @@
 // Popup script — shows current channel status and session-level toggle.
-// Depends on: config/streamers.js (loaded before this script in popup.html)
 
 const root = document.getElementById('root');
 
@@ -14,22 +13,10 @@ async function init() {
   const twitchMatch = url.match(/^https:\/\/www\.twitch\.tv\/([^/?#]+)/);
   const channel = twitchMatch ? twitchMatch[1].toLowerCase() : null;
 
-  // STREAMERS is defined by config/streamers.js loaded before this script.
-  const streamerConfig = channel ? STREAMERS[channel] : null;
-
-  if (!streamerConfig) {
-    // Use DOM methods — channel comes from a URL and must not be interpolated
-    // into innerHTML directly.
+  if (!channel) {
     const p = document.createElement('p');
     p.className = 'not-enrolled';
-    if (channel) {
-      const strong = document.createElement('strong');
-      strong.textContent = `/${channel}`;
-      p.appendChild(strong);
-      p.appendChild(document.createTextNode(' is not enrolled in the overlay.'));
-    } else {
-      p.textContent = 'Open a Twitch channel to use the overlay.';
-    }
+    p.textContent = 'Open a Twitch channel to use the overlay.';
     root.appendChild(p);
     return;
   }
@@ -40,7 +27,7 @@ async function init() {
     <div class="channel-row">
       Watching <span id="channel-name-display" class="channel-name"></span>
     </div>
-    <div id="platforms"></div>
+    <div id="status-area"></div>
     <div class="toggle-row">
       <span class="toggle-label">Overlay enabled</span>
       <label class="switch">
@@ -62,28 +49,51 @@ async function init() {
     chrome.storage.session.set({ overlayEnabled: e.target.checked });
   });
 
-  // Render platform status placeholders and ask the content script for status.
-  const platformsEl = document.getElementById('platforms');
-  for (const platform of Object.keys(streamerConfig.platforms)) {
-    platformsEl.appendChild(buildPlatformRow(platform, { status: 'unknown' }));
-  }
+  const statusArea = document.getElementById('status-area');
 
   // Request a status snapshot from the content script in the active tab.
+  let discoveryState = null;
+  let statuses = null;
   if (tab?.id) {
     try {
       const response = await chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' });
-      if (response?.statuses) {
-        for (const [platform, statusInfo] of Object.entries(response.statuses)) {
-          updatePlatformRow(platform, statusInfo);
-        }
+      if (response) {
+        discoveryState = response.discoveryState ?? null;
+        statuses = response.statuses ?? null;
       }
     } catch {
       // Content script may not be active yet (e.g. page still loading).
     }
   }
 
-  // Dev override section — always visible on enrolled channels.
-  await renderDevOverride(root);
+  if (discoveryState === 'found' && statuses) {
+    // Show platform status rows
+    const platformsEl = document.createElement('div');
+    platformsEl.id = 'platforms';
+    for (const [platform, statusInfo] of Object.entries(statuses)) {
+      platformsEl.appendChild(buildPlatformRow(platform, statusInfo));
+    }
+    // If no statuses yet (polling just started), show a placeholder for youtube
+    if (Object.keys(statuses).length === 0) {
+      platformsEl.appendChild(buildPlatformRow('youtube', { status: 'unknown' }));
+    }
+    statusArea.appendChild(platformsEl);
+  } else if (discoveryState === 'scanning' || discoveryState === null) {
+    const p = document.createElement('p');
+    p.className = 'discovery-msg';
+    p.textContent = discoveryState === 'scanning'
+      ? 'Scanning for YouTube channel on this page…'
+      : 'Connecting…';
+    statusArea.appendChild(p);
+  } else if (discoveryState === 'not_found') {
+    const p = document.createElement('p');
+    p.className = 'discovery-msg';
+    p.textContent = 'No YouTube channel found on this page.';
+    statusArea.appendChild(p);
+  }
+
+  // Manual override section — always shown when on a Twitch channel.
+  await renderManualOverride(root);
 }
 
 function buildPlatformRow(platform, statusInfo) {
@@ -99,7 +109,7 @@ function buildPlatformRow(platform, statusInfo) {
   const status = VALID_STATUSES.has(statusInfo.status) ? statusInfo.status : 'unknown';
 
   // iconUrl  — chrome.runtime.getURL(), extension-controlled, safe.
-  // label    — derived from hardcoded STREAMERS keys, safe.
+  // label    — derived from known platform keys, safe.
   // status   — whitelisted above, safe.
   // videoId  — validated as [\w-]+ by the YouTube adapter's regex, safe.
   row.innerHTML = `
@@ -111,24 +121,19 @@ function buildPlatformRow(platform, statusInfo) {
   return row;
 }
 
-function updatePlatformRow(platform, statusInfo) {
-  const existing = document.getElementById(`platform-${platform}`);
-  if (!existing) return;
-  existing.replaceWith(buildPlatformRow(platform, statusInfo));
-}
-
 function formatStatus(status) {
   return { live: 'Live', offline: 'Offline', error: 'Error', unknown: '…' }[status] ?? status;
 }
 
 // ---------------------------------------------------------------------------
-// Dev override
+// Manual override
 // ---------------------------------------------------------------------------
 
 // Parses a freeform YouTube input into a platform config suitable for
 // START_POLLING. Accepts:
 //   - Channel handle:  @SHIRASESHIRAKAWA  |  SHIRASESHIRAKAWA
 //   - Channel URL:     https://www.youtube.com/@SHIRASESHIRAKAWA
+//   - Channel URL:     https://www.youtube.com/channel/UCxxxx
 //   - Watch URL:       https://www.youtube.com/watch?v=VIDEO_ID
 //   - Short URL:       https://youtu.be/VIDEO_ID
 function parseYouTubeInput(raw) {
@@ -141,6 +146,12 @@ function parseYouTubeInput(raw) {
     return { platforms: { youtube: { videoId: videoMatch[1] } } };
   }
 
+  // /channel/UCxxxx URL → extract channel ID
+  const channelIdMatch = s.match(/youtube\.com\/channel\/(UC[\w-]+)/);
+  if (channelIdMatch) {
+    return { platforms: { youtube: { channelId: channelIdMatch[1] } } };
+  }
+
   // Channel URL or bare handle → extract handle (strip leading @, URL prefix)
   const handleMatch = s.match(/(?:youtube\.com\/@?|^@?)([\w.-]{3,30})(?:\/|$)/);
   if (handleMatch && handleMatch[1]) {
@@ -150,14 +161,14 @@ function parseYouTubeInput(raw) {
   return null;
 }
 
-async function renderDevOverride(container) {
-  const result = await chrome.storage.session.get(['devOverride']).catch(() => ({}));
-  const current = result?.devOverride; // null/undefined = no override active
+async function renderManualOverride(container) {
+  const result = await chrome.storage.session.get(['manualOverride']).catch(() => ({}));
+  const current = result?.manualOverride; // null/undefined = no override active
 
   const section = document.createElement('div');
   section.className = 'dev-section';
   section.innerHTML = `
-    <div class="dev-heading">⚙ Dev Override</div>
+    <div class="dev-heading">Manual Override</div>
     <div class="dev-platform-label">YouTube channel or video URL</div>
     <div class="dev-input-row">
       <input class="dev-input" id="dev-input" type="text"
@@ -172,12 +183,12 @@ async function renderDevOverride(container) {
   `;
   container.appendChild(section);
 
-  const input      = section.querySelector('#dev-input');
-  const setBtn     = section.querySelector('#dev-set');
-  const activeRow  = section.querySelector('#dev-active-row');
+  const input       = section.querySelector('#dev-input');
+  const setBtn      = section.querySelector('#dev-set');
+  const activeRow   = section.querySelector('#dev-active-row');
   const activeLabel = section.querySelector('#dev-active-label');
-  const clearBtn   = section.querySelector('#dev-clear');
-  const errorEl    = section.querySelector('#dev-error');
+  const clearBtn    = section.querySelector('#dev-clear');
+  const errorEl     = section.querySelector('#dev-error');
 
   function showActive(raw) {
     activeLabel.textContent = `Active: ${raw}`;
@@ -203,7 +214,7 @@ async function renderDevOverride(container) {
       return;
     }
 
-    chrome.storage.session.set({ devOverride: { raw, ...parsed } }, () => {
+    chrome.storage.session.set({ manualOverride: { raw, ...parsed } }, () => {
       input.value = '';
       showActive(raw);
     });
@@ -215,7 +226,7 @@ async function renderDevOverride(container) {
   });
 
   clearBtn.addEventListener('click', () => {
-    chrome.storage.session.remove('devOverride', () => {
+    chrome.storage.session.remove('manualOverride', () => {
       hideActive();
       input.value = '';
       errorEl.style.display = 'none';
