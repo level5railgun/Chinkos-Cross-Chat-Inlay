@@ -41,6 +41,17 @@ Accepted formats:
 - `https://www.youtube.com/watch?v=VIDEO_ID`
 - `https://youtu.be/VIDEO_ID`
 
+## Support Us
+Doing this for free. Here are my socials:
+- [Xitter](https://x.com/chikun__)
+- Discord: chikun
+
+Go say hi to my fiancee and say I sent you:
+- https://x.com/pachikko_
+- https://www.twitch.tv/pachi
+- https://www.youtube.com/@pachikko_
+- https://www.tiktok.com/@pachikko_
+
 ## Privacy
 
 This extension does not collect, store, or transmit any personal data. See the full [Privacy Policy](privacy-policy.md).
