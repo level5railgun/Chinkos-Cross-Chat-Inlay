@@ -2,14 +2,22 @@
 // Discovers live streams via /@handle/live redirect, fetches chat via
 // the continuation API, and normalizes messages to the ChatMessage interface.
 //
-// clientVersion and apiKey are extracted dynamically from the live_chat page
-// so the adapter stays compatible with YouTube's current internal API version.
+// Two polling strategies:
+//   1. InnerTube continuation API (fast, lightweight POST requests)
+//   2. Page-poll fallback (re-fetches /live_chat HTML and deduplicates)
+//
+// Chrome MV3 service workers send Sec-Fetch-Site: cross-site and Origin:
+// chrome-extension://… on POST requests — headers that cannot be overridden.
+// Google's abuse detection can flag this fingerprint, returning a "Sorry…"
+// CAPTCHA page (403). When that happens the adapter falls back to page-poll
+// mode, which uses simple GET requests that are not flagged.
 
 const LIVE_CHAT_API = 'https://www.youtube.com/youtubei/v1/live_chat/get_live_chat';
 // Fallback InnerTube web API key — extracted dynamically from the live_chat page when possible.
 const FALLBACK_API_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
 const MIN_POLL_MS = 2000;
 const FALLBACK_POLL_MS = 3000;
+const PAGE_POLL_MS = 6000;     // Interval for page-poll fallback (heavier, so slower)
 const DISCOVERY_RETRY_MS = 60_000;
 const ERROR_RETRY_MS = 5_000;
 
@@ -28,6 +36,10 @@ export function createAdapter({ onMessages, onStatus }) {
   let channelId = null;
   let initVideoId = null; // set when init receives a direct videoId (manual override)
 
+  // Page-poll fallback state.
+  let usePagePoll = false;   // true after InnerTube API 403
+  let seenIds = new Set();   // dedup set for page-poll mode
+
   // --- Discovery ---
 
   async function discoverLive() {
@@ -37,7 +49,6 @@ export function createAdapter({ onMessages, onStatus }) {
       : `https://www.youtube.com/channel/${channelId}/live`;
     try {
       const res = await fetch(url, { redirect: 'follow' });
-      console.log(`[overlay/youtube] discoverLive status=${res.status} finalUrl=${res.url}`);
       // Try redirect URL first (HTTP 302 → watch URL)
       const urlMatch = res.url.match(/[?&]v=([\w-]+)/);
       if (urlMatch) return urlMatch[1];
@@ -45,7 +56,6 @@ export function createAdapter({ onMessages, onStatus }) {
       // embedded in the page HTML rather than issuing an HTTP redirect.
       const html = await res.text();
       const htmlMatch = html.match(/"videoId"\s*:\s*"([\w-]{11})"/);
-      console.log(`[overlay/youtube] discoverLive htmlFallback=${htmlMatch ? htmlMatch[1] : 'null'}`);
       return htmlMatch ? htmlMatch[1] : null;
     } catch (err) {
       console.warn('[overlay/youtube] discoverLive fetch error:', err.message);
@@ -56,64 +66,68 @@ export function createAdapter({ onMessages, onStatus }) {
   // Fetches the live_chat iframe page and extracts:
   //  - the initial continuation token
   //  - INNERTUBE_CLIENT_VERSION, INNERTUBE_API_KEY, visitorData (for authenticated polls)
-  //  - the initial batch of chat messages already present in ytInitialData
+  //  - the batch of chat messages present in ytInitialData
+  //
+  // Returns { token, messages } or null on failure.
   async function getInitialData(vid) {
     let html;
     try {
       const res = await fetch(`https://www.youtube.com/live_chat?v=${vid}`, { credentials: 'include' });
       html = await res.text();
-      console.log(`[overlay/youtube] getInitialData fetch ok status=${res.status} len=${html.length}`);
     } catch (err) {
       console.warn('[overlay/youtube] getInitialData fetch error:', err.message);
       return null;
     }
 
-    // Extract INNERTUBE_CLIENT_VERSION and INNERTUBE_API_KEY from the page config.
+    // Detect YouTube consent / cookie-wall pages that block access to live_chat.
+    if (html.includes('action="https://consent.youtube.com') ||
+        html.includes('action="https://consent.google.com')) {
+      console.warn(
+        '[overlay/youtube] getInitialData blocked by YouTube consent page. ' +
+        'The user may need to accept YouTube cookies in their browser first.'
+      );
+      return null;
+    }
+
+    // Extract INNERTUBE_CLIENT_VERSION, INNERTUBE_API_KEY, and VISITOR_DATA from
+    // the page config (ytcfg). VISITOR_DATA is critical for bot detection.
     const versionMatch = html.match(/"INNERTUBE_CLIENT_VERSION"\s*:\s*"([^"]+)"/);
     if (versionMatch) clientVersion = versionMatch[1];
     const apiKeyMatch = html.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
     if (apiKeyMatch) apiKey = apiKeyMatch[1];
     const dsMatch = html.match(/"DATASYNC_ID"\s*:\s*"([^"]+)"/);
     if (dsMatch) datasyncId = dsMatch[1];
+    // VISITOR_DATA lives in ytcfg (page config), NOT inside ytInitialData.
+    const vdConfigMatch = html.match(/"VISITOR_DATA"\s*:\s*"([^"]+)"/);
+    if (vdConfigMatch) visitorData = decodeURIComponent(vdConfigMatch[1]);
 
     // Extract ytInitialData JSON.
-    // YouTube's live_chat page can use several assignment forms:
-    //   ytInitialData = {...}          (no var, spaces optional)
-    //   var ytInitialData={...}
-    //   window["ytInitialData"] = {...}
-    // The closing delimiter also varies: '};\n</script>' vs '};  </script>' etc.
-    const prefixMatch = html.match(/window\["ytInitialData"\]\s*=\s*|ytInitialData\s*=\s*/);
-    console.log(`[overlay/youtube] getInitialData ytInitialData=${!!prefixMatch} clientVersion=${clientVersion}`);
+    const prefixMatch = html.match(/window\.ytInitialData\s*=\s*|window\["ytInitialData"\]\s*=\s*|ytInitialData\s*=\s*/);
     if (!prefixMatch) return null;
 
     const jsonStart = prefixMatch.index + prefixMatch[0].length;
     const remaining = html.slice(jsonStart);
-    // Find the closing brace of the top-level object immediately before </script>.
     const endMatch = remaining.search(/\};?[\t\r\n ]*<\/script>/);
-    console.log(`[overlay/youtube] getInitialData jsonEnd=${endMatch !== -1}`);
     if (endMatch === -1) return null;
 
     try {
       const data = JSON.parse(remaining.slice(0, endMatch + 1));
 
-      // Extract visitorData — needed in every poll context to pass bot detection.
+      // Extract visitorData from ytInitialData as well (overrides ytcfg if present).
       const vd = data?.responseContext?.visitorData;
       if (vd) visitorData = vd;
 
       const continuations = data?.contents?.liveChatRenderer?.continuations;
-      console.log(`[overlay/youtube] getInitialData hasContinuations=${Array.isArray(continuations)} count=${continuations?.length}`);
       const token = extractContinuationToken(continuations);
-      console.log(`[overlay/youtube] getInitialData token=${token ? token.slice(0, 20) + '…' : 'null'}`);
 
-      // Surface the initial batch of messages that are already baked into the page.
+      // Extract the batch of messages baked into the page.
       const initialActions = data?.contents?.liveChatRenderer?.actions ?? [];
-      const initialMessages = initialActions
+      const messages = initialActions
         .map(a => a?.addChatItemAction?.item?.liveChatTextMessageRenderer)
         .filter(Boolean)
         .map(normalizeMessage);
-      if (initialMessages.length > 0) onMessages(initialMessages);
 
-      return token;
+      return { token, messages };
     } catch (err) {
       console.warn('[overlay/youtube] getInitialData parse error:', err.message);
       return null;
@@ -134,11 +148,7 @@ export function createAdapter({ onMessages, onStatus }) {
 
   // --- Auth ---
 
-  // YouTube's continuation API requires an Authorization: SAPISIDHASH header on
-  // every request — the same mechanism YouTube's own web client uses.
-  // The hash is SHA-1( timestamp + " " + SAPISID + " " + origin ).
   async function getSapisidHash() {
-    // __Secure-3PAPISID is the HTTPS-only variant; fall back to plain SAPISID.
     let cookie = await chrome.cookies.get({ url: 'https://www.youtube.com', name: '__Secure-3PAPISID' });
     if (!cookie) {
       cookie = await chrome.cookies.get({ url: 'https://www.youtube.com', name: 'SAPISID' });
@@ -152,24 +162,18 @@ export function createAdapter({ onMessages, onStatus }) {
     return `SAPISIDHASH ${timestamp}_${hex}`;
   }
 
-  // --- Polling ---
+  // --- Polling: InnerTube API ---
 
   function buildClientContext() {
     const client = {
       clientName: 'WEB',
-      // Fall back to a recent known-good version only if discovery failed to
-      // parse one — this should not happen in practice.
       clientVersion: clientVersion ?? '2.20240101',
       hl: 'en',
       gl: 'US',
-      // Additional fields that YouTube's own web client includes. These help
-      // pass server-side validation that checks request fingerprints.
       userAgent: navigator.userAgent,
       platform: 'DESKTOP',
       clientFormFactor: 'UNKNOWN_FORM_FACTOR',
     };
-    // visitorData ties this request to the user's YouTube session, which is
-    // required for the continuation API to accept the request without 403.
     if (visitorData) client.visitorData = visitorData;
     return { client };
   }
@@ -183,28 +187,15 @@ export function createAdapter({ onMessages, onStatus }) {
       'Content-Type': 'application/json',
       'X-YouTube-Client-Name': '1',
       'X-YouTube-Client-Version': cv,
-      // Makes the request look like it originated from the live_chat iframe.
       'X-Origin': 'https://www.youtube.com',
       'Referer': `https://www.youtube.com/live_chat?v=${videoId}`,
-      // Required by YouTube's InnerTube API alongside SAPISIDHASH.
       'X-Goog-AuthUser': '0',
     };
-    // Include the SAPISIDHASH when the user is signed into YouTube.
-    // Unsigned sessions fall back to credentials-only and may still work for
-    // public streams, but auth is required to reliably pass bot detection.
     if (auth) headers['Authorization'] = auth;
-    // visitorData as a header is checked by bot detection on some YouTube
-    // server configurations in addition to the body context field.
     if (visitorData) headers['X-Goog-Visitor-Id'] = visitorData;
-    // datasyncId ties the request to the user's delegated session. YouTube's
-    // InnerTube API requires it alongside SAPISIDHASH for authenticated polls;
-    // without it the server returns 403 even though the continuation token and
-    // visitorData are valid.
     if (datasyncId) headers['X-Goog-PageId'] = datasyncId;
 
     const body = { context: buildClientContext(), continuation };
-    // Include the delegated session ID so YouTube's server maps this request
-    // to the authenticated user's session — mirrors YouTube's own web client.
     if (datasyncId) body.context.user = { onBehalfOfUser: datasyncId };
 
     const res = await fetch(`${LIVE_CHAT_API}?key=${key}`, {
@@ -216,7 +207,8 @@ export function createAdapter({ onMessages, onStatus }) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
 
-    const lcc = data?.liveChatContinuation;
+    // YouTube nests chat data under different keys depending on context.
+    const lcc = data?.liveChatContinuation ?? data?.continuationContents?.liveChatContinuation;
     if (!lcc) throw new Error('No liveChatContinuation in response');
 
     const nextToken = extractContinuationToken(lcc.continuations);
@@ -267,7 +259,26 @@ export function createAdapter({ onMessages, onStatus }) {
     };
   }
 
-  // --- Poll loop ---
+  // --- Helper: emit initial messages (used by both poll modes) ---
+
+  function emitInitialMessages(result) {
+    if (!result?.messages?.length) return;
+    if (usePagePoll) {
+      // In page-poll mode, deduplicate against seenIds.
+      const fresh = result.messages.filter(m => !seenIds.has(m.id));
+      for (const m of result.messages) seenIds.add(m.id);
+      // Cap the dedup set to avoid unbounded growth.
+      if (seenIds.size > 2000) {
+        const arr = [...seenIds];
+        seenIds = new Set(arr.slice(arr.length - 1000));
+      }
+      if (fresh.length > 0) onMessages(fresh);
+    } else {
+      onMessages(result.messages);
+    }
+  }
+
+  // --- Poll loop: InnerTube API (primary) ---
 
   async function pollLoop() {
     if (stopped || paused || !continuation) return;
@@ -277,10 +288,9 @@ export function createAdapter({ onMessages, onStatus }) {
       const { messages, nextToken, timeoutMs: t } = await fetchBatch();
       if (stopped) return;
 
-      auth403Count = 0; // successful poll — reset consecutive error counter
+      auth403Count = 0;
 
       if (!nextToken) {
-        // No continuation token means the stream ended.
         videoId = null;
         continuation = null;
         onStatus('offline');
@@ -292,32 +302,17 @@ export function createAdapter({ onMessages, onStatus }) {
       timeoutMs = t;
       if (messages.length > 0) onMessages(messages);
     } catch (err) {
-      console.warn('[overlay/youtube] poll error:', err.message);
-
       if (err.message.includes('403') && videoId) {
         auth403Count++;
-        if (auth403Count > 3) {
-          // Refreshing the session hasn't helped after multiple attempts —
-          // the auth issue is unresolvable here. Drop back to full discovery.
-          auth403Count = 0;
-          console.warn('[overlay/youtube] 403 persists after refresh — dropping to discovery');
-          onStatus('error');
-          if (!stopped) pollTimer = setTimeout(discover, DISCOVERY_RETRY_MS);
-          return;
-        }
-        // Re-fetch the live_chat page to obtain fresh session context
-        // (continuation token, visitorData, apiKey, datasyncId).
-        console.log(`[overlay/youtube] 403 (attempt ${auth403Count}) — refreshing session via getInitialData`);
-        const freshToken = await getInitialData(videoId);
-        if (stopped) return;
-        if (freshToken) {
-          continuation = freshToken;
-          timeoutMs = FALLBACK_POLL_MS; // conservative delay after re-init
-        } else {
-          // Page fetch itself failed — drop back to full discovery.
-          auth403Count = 0;
-          onStatus('error');
-          if (!stopped) pollTimer = setTimeout(discover, DISCOVERY_RETRY_MS);
+
+        if (auth403Count >= 1) {
+          // InnerTube API POST is blocked by Google's abuse detection.
+          // Fall back to page-poll mode (GET requests are not flagged).
+          console.log('[overlay/youtube] 403 on InnerTube API — switching to page-poll mode');
+          usePagePoll = true;
+          // Seed the dedup set with messages from the initial page fetch.
+          // (seenIds may already have some from the init phase.)
+          pageRefreshLoop();
           return;
         }
       } else {
@@ -330,15 +325,46 @@ export function createAdapter({ onMessages, onStatus }) {
     }
   }
 
+  // --- Poll loop: Page-poll fallback ---
+  // Re-fetches the /live_chat HTML page periodically. Each fetch returns the
+  // latest ~50–100 messages. We deduplicate by message ID so only new messages
+  // are forwarded to the UI.
+
+  async function pageRefreshLoop() {
+    if (stopped || paused) return;
+
+    try {
+      const result = await getInitialData(videoId);
+      if (stopped) return;
+
+      if (!result) {
+        // Page fetch failed — stream may have ended or page changed.
+        onStatus('error');
+        if (!stopped) pollTimer = setTimeout(() => pageRefreshLoop(), ERROR_RETRY_MS);
+        return;
+      }
+
+      emitInitialMessages(result);
+
+      // Still live — schedule next poll.
+      if (!stopped && !paused) {
+        pollTimer = setTimeout(pageRefreshLoop, PAGE_POLL_MS);
+      }
+    } catch (err) {
+      console.warn('[overlay/youtube] page-poll error:', err.message);
+      if (!stopped && !paused) {
+        pollTimer = setTimeout(pageRefreshLoop, ERROR_RETRY_MS);
+      }
+    }
+  }
+
   // --- Discovery loop ---
 
   async function discover() {
     if (stopped) return;
 
-    auth403Count = 0; // fresh discovery attempt — reset error counter
+    auth403Count = 0;
 
-    // No channel handle or ID available means we were started with a direct videoId that
-    // has since gone offline. Cannot rediscover — stop here.
     if (!channelHandle && !channelId) {
       onStatus('offline');
       return;
@@ -351,20 +377,46 @@ export function createAdapter({ onMessages, onStatus }) {
       videoId = vid;
       onStatus('live', vid);
 
-      const token = await getInitialData(vid);
+      const result = await getInitialData(vid);
       if (stopped) return;
 
-      if (!token) {
+      if (!result?.token) {
         onStatus('error');
         pollTimer = setTimeout(discover, DISCOVERY_RETRY_MS);
         return;
       }
 
-      continuation = token;
-      pollLoop();
+      emitInitialMessages(result);
+      continuation = result.token;
+      if (usePagePoll) {
+        pageRefreshLoop();
+      } else {
+        pollLoop();
+      }
     } else {
       onStatus('offline');
       if (!stopped) pollTimer = setTimeout(discover, DISCOVERY_RETRY_MS);
+    }
+  }
+
+  // --- Init retry (manual override) ---
+
+  async function initRetry() {
+    if (stopped) return;
+    onStatus('live', videoId);
+    const result = await getInitialData(videoId);
+    if (stopped) return;
+    if (!result?.token) {
+      onStatus('error');
+      if (!stopped) pollTimer = setTimeout(() => initRetry(), DISCOVERY_RETRY_MS);
+      return;
+    }
+    emitInitialMessages(result);
+    continuation = result.token;
+    if (usePagePoll) {
+      pageRefreshLoop();
+    } else {
+      pollLoop();
     }
   }
 
@@ -379,13 +431,22 @@ export function createAdapter({ onMessages, onStatus }) {
       paused  = false;
 
       if (initVideoId) {
-        // Dev override: direct video ID supplied — skip discovery entirely.
+        // Direct video ID supplied (manual override) — skip discovery entirely.
         videoId = initVideoId;
         onStatus('live', videoId);
-        const token = await getInitialData(videoId);
+        const result = await getInitialData(videoId);
         if (stopped) return;
-        if (!token) { onStatus('error'); return; }
-        continuation = token;
+        if (!result?.token) {
+          onStatus('error');
+          if (!stopped) pollTimer = setTimeout(() => initRetry(), DISCOVERY_RETRY_MS);
+          return;
+        }
+        // Seed dedup set in case we fall back to page-poll later.
+        if (result.messages) {
+          for (const m of result.messages) seenIds.add(m.id);
+        }
+        emitInitialMessages(result);
+        continuation = result.token;
         pollLoop();
       } else {
         discover();
@@ -400,7 +461,11 @@ export function createAdapter({ onMessages, onStatus }) {
     resume() {
       if (!paused) return;
       paused = false;
-      continuation ? pollLoop() : discover();
+      if (usePagePoll) {
+        pageRefreshLoop();
+      } else {
+        continuation ? pollLoop() : discover();
+      }
     },
 
     stop() {
