@@ -21,12 +21,39 @@ function recordSeen(id) {
   seenIds.add(id);
 }
 
+// Twitch chat selectors — primary is native Twitch, fallbacks cover third-party
+// extensions (BTTV, FFZ, 7TV) that replace or wrap the chat container.
+const SCROLL_CONTAINER_SELECTORS = [
+  '[data-a-target="chat-scroller"]',
+  '.chat-scrollable-area__message-container',
+  '.chat-list--default',
+  '.chat-list--other',
+  '.chat-list',
+];
+
+const CHAT_LOG_SELECTORS = [
+  '[data-a-target="chat-scroller"] [role="log"]',
+  '.chat-scrollable-area__message-container [role="log"]',
+  '.chat-list--default [role="log"]',
+  '.chat-list--other [role="log"]',
+  '.chat-list [role="log"]',
+  '[role="log"]',
+];
+
 function getScrollContainer() {
-  return document.querySelector('[data-a-target="chat-scroller"]');
+  for (const sel of SCROLL_CONTAINER_SELECTORS) {
+    const el = document.querySelector(sel);
+    if (el) return el;
+  }
+  return null;
 }
 
 function getChatLog() {
-  return document.querySelector('[data-a-target="chat-scroller"] [role="log"]');
+  for (const sel of CHAT_LOG_SELECTORS) {
+    const el = document.querySelector(sel);
+    if (el) return el;
+  }
+  return null;
 }
 
 function isPinnedToBottom(container) {

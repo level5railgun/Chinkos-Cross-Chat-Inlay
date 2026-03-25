@@ -78,17 +78,25 @@
     return null;
   }
 
+  function isInsideChatScroller(el) {
+    return el.closest('[data-a-target="chat-scroller"]') ||
+           el.closest('.chat-scrollable-area__message-container') ||
+           el.closest('.chat-list--default') ||
+           el.closest('.chat-list--other') ||
+           el.closest('.chat-list');
+  }
+
   function findYouTubeChannelLink() {
     const links = document.querySelectorAll('a[href*="youtube"]');
     // Prefer channel links (handle/channelId) over video links
     for (const link of links) {
-      if (link.closest('[data-a-target="chat-scroller"]')) continue;
+      if (isInsideChatScroller(link)) continue;
       const parsed = parseYouTubeLinkFromHref(link.href);
       if (parsed && !parsed.videoId) return parsed;
     }
     // Fallback: accept video links too
     for (const link of links) {
-      if (link.closest('[data-a-target="chat-scroller"]')) continue;
+      if (isInsideChatScroller(link)) continue;
       const parsed = parseYouTubeLinkFromHref(link.href);
       if (parsed) return parsed;
     }
@@ -300,7 +308,7 @@
   let primaryObserver = null;
 
   function attachPrimaryObserver() {
-    const log = document.querySelector('[data-a-target="chat-scroller"] [role="log"]');
+    const log = getChatLog();
     if (!log) return false;
 
     if (primaryObserver) primaryObserver.disconnect();
@@ -326,7 +334,7 @@
   const secondaryObserver = new MutationObserver(() => {
     // Re-attach primary observer when Twitch remounts the chat log.
     if (navigatedAway) return; // Left this channel (e.g. raid) — don't reconnect.
-    if (!document.querySelector('[data-a-target="chat-scroller"] [role="log"]')) return;
+    if (!getChatLog()) return;
     if (attachPrimaryObserver()) {
       // Chat was remounted — reconnect if port dropped and we have platforms to poll.
       if (!port && autoDetectedPlatforms) connect();
