@@ -1,33 +1,33 @@
 /* Cross-Platform Chat Overlay — injected styles */
 
-/* Injected chat row */
+/* Injected chat row — mirrors Twitch's inline flow layout so badges,
+   username, and message text wrap together naturally. */
 .ext-chat-line {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
   padding: 4px 8px;
-  gap: 2px;
   font-size: 1.3rem;
-  line-height: 1.5;
+  line-height: 2rem;
   word-break: break-word;
 }
 
 /* Platform source badge (YouTube icon, etc.) */
 .ext-platform-badge {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
+  display: inline;
   margin-right: 2px;
 }
 
 .ext-platform-badge img {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   object-fit: contain;
-  border-radius: 2px;
+  vertical-align: middle;
 }
 
 /* Member/subscriber badge from source platform */
+.ext-chat-line .chat-badge {
+  display: inline;
+  margin-right: 2px;
+}
+
 .ext-chat-line .chat-badge img {
   height: 18px;
   width: auto;

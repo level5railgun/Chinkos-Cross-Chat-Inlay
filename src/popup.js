@@ -101,7 +101,7 @@ function buildPlatformRow(platform, statusInfo) {
   row.className = 'platform-status';
   row.id = `platform-${platform}`;
 
-  const iconUrl = chrome.runtime.getURL(`assets/icons/${platform}.png`);
+  const iconUrl = chrome.runtime.getURL(`assets/icons/${platform}.svg`);
   const label = platform.charAt(0).toUpperCase() + platform.slice(1);
   const { videoId } = statusInfo;
 

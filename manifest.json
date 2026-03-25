@@ -34,7 +34,7 @@
     }
   },
   "web_accessible_resources": [{
-    "resources": ["assets/icons/youtube.png"],
+    "resources": ["assets/icons/youtube.svg"],
     "matches": ["https://www.twitch.tv/*"]
   }]
 }

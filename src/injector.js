@@ -46,7 +46,7 @@ function buildPlatformBadge(platform) {
   span.title = platform.charAt(0).toUpperCase() + platform.slice(1);
 
   const img = document.createElement('img');
-  img.src = chrome.runtime.getURL(`assets/icons/${platform}.png`);
+  img.src = chrome.runtime.getURL(`assets/icons/${platform}.svg`);
   img.alt = span.title;
   span.appendChild(img);
   return span;
@@ -157,7 +157,7 @@ function showLiveBanner(platform, videoId) {
   banner.dataset.extPlatform = platform;
 
   const img = document.createElement('img');
-  img.src = chrome.runtime.getURL(`assets/icons/${platform}.png`);
+  img.src = chrome.runtime.getURL(`assets/icons/${platform}.svg`);
   img.alt = platform.charAt(0).toUpperCase() + platform.slice(1);
   banner.appendChild(img);
 
