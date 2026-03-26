@@ -34,9 +34,13 @@ const SCROLL_CONTAINER_SELECTORS = [
 const CHAT_LOG_SELECTORS = [
   '[data-a-target="chat-scroller"] [role="log"]',
   '.chat-scrollable-area__message-container [role="log"]',
-  '.chat-list--default [role="log"]',
-  '.chat-list--other [role="log"]',
-  '.chat-list [role="log"]',
+  // Some Twitch layouts omit [role="log"] entirely — target the message
+  // container directly so messages still get injected.
+  '.chat-scrollable-area__message-container',
+  '[data-a-target="chat-scroller"]',
+  '.chat-list--default',
+  '.chat-list--other',
+  '.chat-list',
   '[role="log"]',
 ];
 
@@ -51,8 +55,12 @@ function getScrollContainer() {
 function getChatLog() {
   for (const sel of CHAT_LOG_SELECTORS) {
     const el = document.querySelector(sel);
-    if (el) return el;
+    if (el) {
+      console.log('[overlay] getChatLog matched:', sel);
+      return el;
+    }
   }
+  console.warn('[overlay] getChatLog: no selector matched. Chat DOM may not exist yet or uses an unknown structure.');
   return null;
 }
 
@@ -139,11 +147,15 @@ function buildChatRow(msg) {
 
 function insertMessages(messages) {
   const log = getChatLog();
-  if (!log) return;
+  if (!log) {
+    console.warn('[overlay] insertMessages: getChatLog() returned null — dropping', messages.length, 'messages');
+    return;
+  }
 
   const container = getScrollContainer();
   const pinned = isPinnedToBottom(container);
 
+  let inserted = 0;
   for (const msg of messages) {
     if (!msg.id || seenIds.has(msg.id)) continue;
     recordSeen(msg.id);
@@ -151,8 +163,10 @@ function insertMessages(messages) {
     const row = buildChatRow(msg);
     log.appendChild(row);
     injectedCount++;
+    inserted++;
   }
 
+  if (inserted > 0) console.log(`[overlay] inserted ${inserted} messages into chat`);
   if (pinned) scrollToBottom(container);
 }
 
