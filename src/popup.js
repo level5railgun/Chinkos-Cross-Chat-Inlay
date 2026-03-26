@@ -85,11 +85,6 @@ async function init() {
       ? 'Scanning for YouTube channel on this page…'
       : 'Connecting…';
     statusArea.appendChild(p);
-  } else if (discoveryState === 'not_found') {
-    const p = document.createElement('p');
-    p.className = 'discovery-msg';
-    p.textContent = 'No YouTube channel found on this page.';
-    statusArea.appendChild(p);
   }
 
   // Manual override section — always shown when on a Twitch channel.

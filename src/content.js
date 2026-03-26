@@ -36,9 +36,7 @@
   let discoveryState = 'scanning';
   //   'scanning'  — looking for YouTube link on page
   //   'found'     — YouTube link found, polling started
-  //   'not_found' — scan timed out with no link
   let scanObserver = null;
-  let scanTimeout = null;
 
   // --- YouTube link scanner ---
 
@@ -121,30 +119,18 @@
       return;
     }
 
-    // MutationObserver scan — waits for panels to render
+    // MutationObserver scan — waits for panels to render.
+    // No timeout: panels can take arbitrarily long on slow connections.
+    // The observer stays active until a link is found or the user navigates away.
     scanObserver = new MutationObserver(() => {
       const result = findYouTubeChannelLink();
       if (result) {
         scanObserver.disconnect();
         scanObserver = null;
-        clearTimeout(scanTimeout);
-        scanTimeout = null;
         onYouTubeLinkFound(result);
       }
     });
     scanObserver.observe(document.body, { childList: true, subtree: true });
-
-    // 15-second timeout: if panels never render a YouTube link, mark not_found
-    scanTimeout = setTimeout(() => {
-      if (scanObserver) {
-        scanObserver.disconnect();
-        scanObserver = null;
-      }
-      scanTimeout = null;
-      if (discoveryState === 'scanning') {
-        discoveryState = 'not_found';
-      }
-    }, 15000);
   }
 
   // --- Port connection ---
@@ -280,7 +266,6 @@
 
     // Cancel any in-progress scan.
     if (scanObserver) { scanObserver.disconnect(); scanObserver = null; }
-    if (scanTimeout) { clearTimeout(scanTimeout); scanTimeout = null; }
   }
 
   const titleEl = document.querySelector('head > title');
